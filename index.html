@@ -11,7 +11,7 @@
 		     colours and words are baked in, so loading reads as the game, alone or
 		     in the Wayside Station arcade's cabinet iframe. Page zoom is blocked
 		     (gesturestart, dblclick), touch-action / overscroll are off, audio
-		     resumes on the first tap, and phones load the lighter index.mobile.pck
+		     unlocks on the first tap (iOS too: see the script below), and phones load the lighter index.mobile.pck
 		     when the build has one (tools/web_build.sh). -->
 		<style>
 :root { --bg: #160c1f; --panel: #2a1733; --ink: #f6e7cf; --dim: #b99fae; --accent: #ff8a1f; --glow: #ffd35c; }
@@ -100,32 +100,231 @@ body {
 		</div>
 
 		<script>
-// Browsers start audio suspended until a user gesture (autoplay policy). Keep
-// every AudioContext the engine makes and resume them on the first
-// click / tap / key, so the title screen's first tap starts the music.
+// Audio unlock (window.poptdAudio). Browsers keep Web Audio suspended until a
+// user gesture, and iOS Safari (also inside a cross-origin iframe) only lets it
+// start *inside* one: touchend / click / keydown, not touchstart. So:
+// * the AudioContext constructor is wrapped before the engine loads and every
+//   context it makes is kept (Godot's GodotAudio.ctx is otherwise out of reach);
+// * every gesture, synchronously in a capture listener: resume() each context
+//   that isn't running and start a 1-sample silent buffer on it (on iOS a
+//   resume() alone can stay pending until a sound starts in the gesture);
+// * the ring/silent switch: navigator.audioSession.type = 'playback' (Safari
+//   16.4+ / iOS 17) and, on iOS, a looping silent inline <audio> started in the
+//   gesture, which puts the page in the "playback" audio category on older iOS
+//   (?silentloop=0 turns it off, ?silentloop=1 forces it elsewhere: testing);
+// * the listeners come off once every context runs (and the silent loop plays)
+//   and go back on when one drops out: iOS "interrupted" after a call or app
+//   switch, or a context the engine makes later (resumed at once if a gesture
+//   already happened, else on the next one);
+// * page hidden: contexts suspended, silent loop paused (nothing plays in the
+//   background); visible / pageshow / focus resumes them, and when iOS refuses
+//   that outside a gesture, the next tap does it.
+// core/audio.gd polls poptdAudio.ready() / running() and starts the requested
+// music once audio runs. window.poptdStatus (written by ui/app.gd) carries live
+// audio / silentSwitchFallback / audioSession fields; ?debug=audio shows them.
 (function () {
 	const AC = window.AudioContext || window.webkitAudioContext;
+	const Q = new URLSearchParams(location.search);
+	const ua = navigator.userAgent;
+	const IOS = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+	const LOOP = Q.get('silentloop') === '1' || (IOS && Q.get('silentloop') !== '0');
+	const GESTURES = ['pointerdown', 'touchend', 'pointerup', 'mouseup', 'click', 'keydown'];
 	const ctxs = [];
+	const log = [];
+	let gestured = false;   // a trusted gesture has run the unlock
+	let everRan = false;    // some context has reported 'running'
+	let armed = false;
+	let tag = null;
+	function note(t) {
+		log.push((performance.now() / 1000).toFixed(1) + 's ' + t);
+		if (log.length > 10) { log.shift(); }
+	}
+	const live = () => ctxs.filter((c) => c.state !== 'closed');
+	const allRunning = () => { const l = live(); return l.length > 0 && l.every((c) => c.state === 'running'); };
+	const loopOn = () => !!tag && !tag.paused;
+
 	if (AC) {
 		const Wrapped = function (...args) {
 			const c = new AC(...args);
 			ctxs.push(c);
+			c.addEventListener('statechange', () => {
+				if (c.state === 'running') { everRan = true; }
+				note('context ' + c.state);
+				changed();
+			});
+			if (c.state === 'running') { everRan = true; }
+			note('context made (' + c.state + ')');
+			if (gestured && !document.hidden) { kick(c, false); }
+			changed();
 			return c;
 		};
 		Wrapped.prototype = AC.prototype;
 		window.AudioContext = Wrapped;
-		if (window.webkitAudioContext) {
-			window.webkitAudioContext = Wrapped;
+		if (window.webkitAudioContext) { window.webkitAudioContext = Wrapped; }
+	}
+
+	// a 1-sample silent sound, started inside the gesture
+	function tick(c) {
+		try {
+			const s = c.createBufferSource();
+			s.buffer = c.createBuffer(1, 1, c.sampleRate || 44100);
+			s.connect(c.destination);
+			s.start(0);
+		} catch (e) { /* closed */ }
+	}
+	function kick(c, inGesture) {
+		if (c.state === 'closed') { return; }
+		if (c.state !== 'running') {
+			try {
+				const p = c.resume();
+				if (p && p.then) { p.then(changed, (e) => note('resume refused: ' + (e && e.name))); }
+			} catch (e) { /* old Safari */ }
+		}
+		if (inGesture && (c.state !== 'running' || !c.poptdTicked)) {
+			c.poptdTicked = true;
+			tick(c);
 		}
 	}
-	window.poptdAudioContexts = ctxs;
-	const unlock = () => ctxs.forEach((c) => { if (c.state !== 'running' && c.state !== 'closed') { c.resume(); } });
-	['pointerdown', 'pointerup', 'touchend', 'keydown', 'click'].forEach((e) => document.addEventListener(e, unlock, true));
+
+	// 0.5 s of 8 kHz 8-bit mono silence as a WAV data URI (nothing to fetch)
+	function silentWav() {
+		const n = 4000, b = new Uint8Array(44 + n), v = new DataView(b.buffer);
+		const str = (o, t) => { for (let i = 0; i < t.length; i++) { b[o + i] = t.charCodeAt(i); } };
+		str(0, 'RIFF'); v.setUint32(4, 36 + n, true); str(8, 'WAVE'); str(12, 'fmt ');
+		v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+		v.setUint32(24, 8000, true); v.setUint32(28, 8000, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true);
+		str(36, 'data'); v.setUint32(40, n, true);
+		b.fill(128, 44);
+		let s = '';
+		for (let i = 0; i < b.length; i++) { s += String.fromCharCode(b[i]); }
+		return 'data:audio/wav;base64,' + btoa(s);
+	}
+	// the "playback" audio session, so the ring/silent switch does not mute the game
+	function session() {
+		try {
+			if (navigator.audioSession && navigator.audioSession.type !== 'playback') {
+				navigator.audioSession.type = 'playback';
+				note('audioSession playback');
+			}
+		} catch (e) { /* older Safari */ }
+		if (!LOOP || document.hidden) { return; }
+		if (!tag) {
+			tag = document.createElement('audio');
+			tag.setAttribute('playsinline', '');
+			tag.setAttribute('webkit-playsinline', '');
+			tag.setAttribute('x-webkit-airplay', 'deny');
+			tag.disableRemotePlayback = true;
+			tag.loop = true;
+			tag.preload = 'auto';
+			tag.src = silentWav();
+			tag.addEventListener('playing', () => { note('silent loop on'); changed(); });
+			tag.addEventListener('pause', () => { note('silent loop paused'); changed(); });
+		}
+		if (tag.paused) {
+			try {
+				const p = tag.play();
+				if (p && p.catch) { p.catch((e) => note('silent loop refused: ' + (e && e.name))); }
+			} catch (e) { /* no media */ }
+		}
+	}
+
+	function unlock(ev) {
+		if (ev && ev.isTrusted === false) { return; }
+		if (!gestured) { note('first gesture: ' + (ev ? ev.type : '?')); }
+		gestured = true;
+		session();
+		live().forEach((c) => kick(c, true));
+		changed();
+	}
+	function arm() {
+		if (armed) { return; }
+		armed = true;
+		GESTURES.forEach((e) => window.addEventListener(e, unlock, { capture: true, passive: true }));
+	}
+	function disarm() {
+		if (!armed) { return; }
+		armed = false;
+		GESTURES.forEach((e) => window.removeEventListener(e, unlock, { capture: true }));
+		note('unlocked: gesture listeners off');
+	}
+	function changed() {
+		if (gestured && allRunning() && (!LOOP || loopOn())) {
+			disarm();
+		} else if (!document.hidden) {
+			arm();
+		}
+	}
+
+	// background: stop cleanly; foreground: come back (or wait for the next tap)
+	function hide(why) {
+		if (tag && !tag.paused) { tag.pause(); }
+		live().forEach((c) => { if (c.state === 'running') { c.suspend().catch(() => {}); } });
+		note('hidden (' + why + ')');
+	}
+	function show(why) {
+		if (document.hidden) { return; }
+		if (gestured) {
+			session();
+			live().forEach((c) => { if (c.state !== 'running') { kick(c, false); } });
+		}
+		note('shown (' + why + ')');
+		changed();
+	}
+	document.addEventListener('visibilitychange', () => (document.hidden ? hide('visibility') : show('visibility')));
+	window.addEventListener('pagehide', () => hide('pagehide'));
+	window.addEventListener('pageshow', () => show('pageshow'));
+	window.addEventListener('focus', () => show('focus'));
+	arm();
+
+	function state() {
+		if (!everRan) { return 'locked'; }
+		return allRunning() ? 'running' : 'interrupted';
+	}
+	function info() {
+		return {
+			audio: state(),
+			silentSwitchFallback: loopOn() ? 'on' : 'off',
+			audioSession: navigator.audioSession ? String(navigator.audioSession.type) : 'n/a',
+			audioContexts: ctxs.map((c) => c.state),
+			audioGesture: gestured,
+		};
+	}
+	window.poptdAudio = {
+		contexts: ctxs, info, log,
+		ready: () => gestured || allRunning(),   // sounds may be started (they play once resumed)
+		running: () => allRunning(),
+	};
+	// window.poptdStatus: the game's status object (ui/app.gd assigns it every
+	// second) with the live audio fields merged in on every read.
+	let game = {};
+	Object.defineProperty(window, 'poptdStatus', {
+		configurable: true,
+		get: () => Object.assign({}, game, info()),
+		set: (v) => { game = v || {}; },
+	});
+
+	// ?debug=audio: the audio state on screen (phones / the iOS Simulator have no console)
+	if (Q.get('debug') === 'audio') {
+		const box = document.createElement('pre');
+		box.style.cssText = 'position:fixed;left:4px;top:4px;z-index:99;margin:0;padding:6px 8px;max-width:calc(100vw - 24px);'
+			+ 'background:rgba(0,0,0,.72);color:#9f9;font:11px/1.35 ui-monospace,Menlo,monospace;pointer-events:none;white-space:pre-wrap;border-radius:6px';
+		const paint = () => {
+			const s = window.poptdStatus;
+			box.textContent = 'audio: ' + s.audio + '  [' + s.audioContexts.join(',') + ']'
+				+ '\nsilentSwitchFallback: ' + s.silentSwitchFallback + '  audioSession: ' + s.audioSession
+				+ '\ngesture: ' + s.audioGesture + '  listeners: ' + (armed ? 'on' : 'off') + '  iOS: ' + IOS
+				+ '\nscreen: ' + (s.screen || '-') + '  music: ' + (s.music || '-') + ' playing ' + !!s.music_playing
+				+ '  sfx: ' + (s.sfx_played || 0)
+				+ '\n' + log.slice(-6).join('\n');
+		};
+		const add = () => { document.body.appendChild(box); setInterval(paint, 250); paint(); };
+		if (document.body) { add(); } else { document.addEventListener('DOMContentLoaded', add); }
+	}
 }());
 		</script>
 		<script src="index.js"></script>
 		<script>
-const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":true,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":14568088,"index.wasm":37686550,"index.mobile.pck":9651512},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4};
+const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":true,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":14568872,"index.wasm":37686550,"index.mobile.pck":9652296},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4};
 const GODOT_THREADS_ENABLED = false;
 // Phones load the lighter package (index.mobile.pck: no desktop-only music
 // layers) when the build has one: picked here, before the engine starts, so a
