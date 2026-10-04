@@ -128,7 +128,9 @@ body {
 	const ua = navigator.userAgent;
 	const IOS = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
 	const LOOP = Q.get('silentloop') === '1' || (IOS && Q.get('silentloop') !== '0');
-	const GESTURES = ['pointerdown', 'touchend', 'pointerup', 'mouseup', 'click', 'keydown'];
+	// iPad + Magic Keyboard: trackpad clicks arrive as mouse-type pointer/mouse events
+	// and keys as keydown/keyup, so listen to every kind of press, not only touches
+	const GESTURES = ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'touchstart', 'touchend', 'click', 'keydown', 'keyup'];
 	const ctxs = [];
 	const log = [];
 	let gestured = false;   // a trusted gesture has run the unlock
@@ -289,6 +291,37 @@ body {
 			audioGesture: gestured,
 		};
 	}
+	// Fallback: if a press happened but audio still isn't running (some iPadOS
+	// input paths don't count as a gesture once the game canvas has handled them),
+	// show a small "Sound on" button. A click on a real DOM button is always a
+	// user gesture, so it unlocks every context and starts the silent loop.
+	let soundBtn = null;
+	let firstPressAt = 0;
+	const loadedAt = performance.now();
+	function soundButton() {
+		const need = !allRunning() && !document.hidden && live().length > 0
+			&& ((gestured && performance.now() - firstPressAt > 1200) || (IOS && performance.now() - loadedAt > 6000));
+		if (need && !soundBtn) {
+			soundBtn = document.createElement('button');
+			soundBtn.type = 'button';
+			soundBtn.textContent = 'Sound on';
+			soundBtn.setAttribute('aria-label', 'Turn sound on');
+			soundBtn.style.cssText = 'position:fixed;left:12px;bottom:12px;z-index:1000;padding:12px 18px;min-height:44px;'
+				+ 'border-radius:22px;border:2px solid rgba(255,255,255,.75);background:rgba(20,10,30,.82);color:#fff;'
+				+ 'font:600 16px system-ui,-apple-system,sans-serif;touch-action:manipulation;cursor:pointer;';
+			const press = (ev) => { unlock(ev); setTimeout(soundButton, 300); };
+			soundBtn.addEventListener('click', press);
+			soundBtn.addEventListener('touchend', press);
+			document.body.appendChild(soundBtn);
+			note('sound button shown');
+		} else if (!need && soundBtn) {
+			soundBtn.remove();
+			soundBtn = null;
+		}
+	}
+	setInterval(soundButton, 500);
+	window.addEventListener('pointerdown', () => { if (!firstPressAt) { firstPressAt = performance.now(); } }, { capture: true, passive: true });
+	window.addEventListener('keydown', () => { if (!firstPressAt) { firstPressAt = performance.now(); } }, { capture: true, passive: true });
 	window.poptdAudio = {
 		contexts: ctxs, info, log,
 		ready: () => gestured || allRunning(),   // sounds may be started (they play once resumed)
