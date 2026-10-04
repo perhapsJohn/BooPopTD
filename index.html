@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+		<meta name="mobile-web-app-capable" content="yes">
+		<meta name="apple-mobile-web-app-capable" content="yes">
+		<title>Boo Pop TD</title>
+		<!-- Boo Pop TD web shell (web/shell_halloween.html, the edition's Web presets'
+		     custom_html_shell; web/shell.html is the shared original). The edition's
+		     colours and words are baked in, so loading reads as the game, alone or
+		     in the Wayside Station arcade's cabinet iframe. Page zoom is blocked
+		     (gesturestart, dblclick), touch-action / overscroll are off, audio
+		     resumes on the first tap, and phones load the lighter index.mobile.pck
+		     when the build has one (tools/web_build.sh). -->
+		<style>
+:root { --bg: #160c1f; --panel: #2a1733; --ink: #f6e7cf; --dim: #b99fae; --accent: #ff8a1f; --glow: #ffd35c; }
+html, body, #canvas { margin: 0; padding: 0; border: 0; }
+html, body { width: 100%; height: 100%; }
+body {
+	color: var(--ink);
+	background-color: var(--bg);
+	overflow: hidden;
+	touch-action: none;
+	-webkit-user-select: none;
+	user-select: none;
+	-webkit-touch-callout: none;
+	-webkit-tap-highlight-color: transparent;
+	overscroll-behavior: none;
+}
+#canvas { display: block; }
+#canvas:focus { outline: none; }
+#status {
+	position: absolute; inset: 0;
+	background: linear-gradient(#160c1f 0%, #24122f 48%, #3d1a3a 78%, #8a3b1c 94%, #ff8a1f 100%);
+	display: flex; flex-direction: column; justify-content: center; align-items: center;
+	gap: 1.2rem;
+	visibility: hidden;
+	font-family: 'Trebuchet MS', 'Segoe UI', Arial, sans-serif;
+	text-align: center;
+	padding: 1rem;
+	box-sizing: border-box;
+}
+#status-splash { display: none; }
+#status-eyebrow {
+	font-size: 0.72rem; font-weight: 700; letter-spacing: 0.22em; text-transform: uppercase;
+	color: var(--accent);
+}
+#status-title {
+	font-family: 'Cormorant Garamond', Garamond, Georgia, 'Times New Roman', serif;
+	line-height: 1;
+	font-size: clamp(2.4rem, 12vw, 4.5rem);
+	font-weight: 800;
+	letter-spacing: 0.02em;
+	color: var(--ink);
+	text-shadow: 0 0.12em 0 rgba(0, 0, 0, 0.45), 0 0 1.2em var(--accent);
+}
+#status-tag { color: var(--dim); font-size: clamp(0.9rem, 3vw, 1.2rem); }
+#status-bar {
+	width: min(60vw, 420px); height: 14px;
+	border-radius: 999px;
+	background: rgba(0, 0, 0, 0.35);
+	border: 2px solid var(--accent);
+	overflow: hidden;
+	display: none;
+}
+#status-fill {
+	height: 100%; width: 0%;
+	background: linear-gradient(90deg, var(--accent), var(--glow));
+	border-radius: 999px;
+	transition: width 0.2s ease-out;
+}
+#status-fill.indeterminate { width: 35%; animation: slide 1.2s ease-in-out infinite alternate; }
+@keyframes slide { from { margin-left: 0%; } to { margin-left: 65%; } }
+#status-notice {
+	display: none;
+	background-color: var(--panel);
+	border-radius: 0.75rem;
+	border: 2px solid var(--accent);
+	color: var(--ink);
+	line-height: 1.4;
+	max-width: 36rem;
+	padding: 1rem 1.25rem;
+}
+		</style>
+		<link id="-gd-engine-icon" rel="icon" type="image/png" href="index.icon.png" />
+<link rel="apple-touch-icon" href="index.apple-touch-icon.png"/>
+<meta name="theme-color" content="#160c1f"><style>:root{--bg:#160c1f;--panel:#2a1733;--ink:#f6e7cf;--dim:#b99fae;--accent:#ff8a1f;--glow:#ffd35c;}</style><script>window.POPTD={title:'Boo Pop TD',tagline:'Lighting the lanterns...'};</script>
+	</head>
+	<body>
+		<canvas id="canvas">Your browser does not support the canvas tag.</canvas>
+		<noscript>Boo Pop TD needs JavaScript.</noscript>
+		<div id="status">
+			<img id="status-splash" class="show-image--false fullsize--true use-filter--true" src="index.png" alt="">
+			<div id="status-eyebrow">Wayside Station Arcade</div>
+			<div id="status-title">Boo Pop TD</div>
+			<div id="status-tag">Lighting the lanterns&hellip;</div>
+			<div id="status-bar"><div id="status-fill"></div></div>
+			<div id="status-notice"></div>
+		</div>
+
+		<script>
+// Browsers start audio suspended until a user gesture (autoplay policy). Keep
+// every AudioContext the engine makes and resume them on the first
+// click / tap / key, so the title screen's first tap starts the music.
+(function () {
+	const AC = window.AudioContext || window.webkitAudioContext;
+	const ctxs = [];
+	if (AC) {
+		const Wrapped = function (...args) {
+			const c = new AC(...args);
+			ctxs.push(c);
+			return c;
+		};
+		Wrapped.prototype = AC.prototype;
+		window.AudioContext = Wrapped;
+		if (window.webkitAudioContext) {
+			window.webkitAudioContext = Wrapped;
+		}
+	}
+	window.poptdAudioContexts = ctxs;
+	const unlock = () => ctxs.forEach((c) => { if (c.state !== 'running' && c.state !== 'closed') { c.resume(); } });
+	['pointerdown', 'pointerup', 'touchend', 'keydown', 'click'].forEach((e) => document.addEventListener(e, unlock, true));
+}());
+		</script>
+		<script src="index.js"></script>
+		<script>
+const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":true,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":14568088,"index.wasm":37686550,"index.mobile.pck":9651512},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4};
+const GODOT_THREADS_ENABLED = false;
+// Phones load the lighter package (index.mobile.pck: no desktop-only music
+// layers) when the build has one: picked here, before the engine starts, so a
+// phone never downloads index.pck. ?pack=mobile / ?pack=desktop forces one.
+const POPTD_PACK = (function () {
+	const sizes = GODOT_CONFIG.fileSizes || {};
+	if (!sizes['index.mobile.pck']) { return ''; }
+	const forced = new URLSearchParams(location.search).get('pack');
+	if (forced === 'mobile' || forced === 'desktop') { return forced === 'mobile' ? 'index.mobile.pck' : 'index.pck'; }
+	const ua = navigator.userAgent;
+	const phone = /iPhone|iPad|iPod|Android/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)
+		|| window.matchMedia('(max-width: 768px), (pointer: coarse)').matches;
+	return phone ? 'index.mobile.pck' : 'index.pck';
+}());
+const engine = new Engine(GODOT_CONFIG);
+
+(function () {
+	const info = window.POPTD || {};
+	const statusOverlay = document.getElementById('status');
+	const bar = document.getElementById('status-bar');
+	const fill = document.getElementById('status-fill');
+	const statusNotice = document.getElementById('status-notice');
+	if (info.title) { document.getElementById('status-title').textContent = info.title; }
+	if (info.tagline) { document.getElementById('status-tag').textContent = info.tagline; }
+
+	let initializing = true;
+	let statusMode = '';
+
+	function setStatusMode(mode) {
+		if (statusMode === mode || !initializing) {
+			return;
+		}
+		if (mode === 'hidden') {
+			statusOverlay.remove();
+			initializing = false;
+			return;
+		}
+		statusOverlay.style.visibility = 'visible';
+		bar.style.display = mode === 'progress' ? 'block' : 'none';
+		statusNotice.style.display = mode === 'notice' ? 'block' : 'none';
+		statusMode = mode;
+	}
+
+	function displayFailureNotice(err) {
+		console.error(err);
+		let text = 'Something went wrong lighting the lanterns.';
+		if (err instanceof Error) {
+			text = err.message;
+		} else if (typeof err === 'string') {
+			text = err;
+		}
+		statusNotice.textContent = '';
+		text.split('\n').forEach((line) => {
+			statusNotice.appendChild(document.createTextNode(line));
+			statusNotice.appendChild(document.createElement('br'));
+		});
+		setStatusMode('notice');
+		initializing = false;
+	}
+
+	// Keep keyboard focus on the game after taps on the page (hybrid laptops).
+	document.addEventListener('pointerdown', () => {
+		const c = document.getElementById('canvas');
+		if (c && document.activeElement !== c) {
+			c.focus();
+		}
+	}, true);
+	// Pinch / double-tap must never zoom the page itself (the game zooms its camera).
+	document.addEventListener('gesturestart', (e) => e.preventDefault());
+	document.addEventListener('dblclick', (e) => e.preventDefault());
+
+	const missing = Engine.getMissingFeatures({ threads: GODOT_THREADS_ENABLED });
+	if (missing.length !== 0) {
+		displayFailureNotice('This browser is missing features the game needs:\n' + missing.join('\n') + '\nTry a current Chrome, Edge, Firefox or Safari.');
+		return;
+	}
+	setStatusMode('progress');
+	const start = {
+		'onProgress': function (current, total) {
+			if (current > 0 && total > 0) {
+				fill.classList.remove('indeterminate');
+				fill.style.width = Math.min(100, (100 * current) / total).toFixed(1) + '%';
+			} else {
+				fill.classList.add('indeterminate');
+			}
+		},
+	};
+	if (POPTD_PACK) {
+		start.mainPack = POPTD_PACK;
+		window.poptdPack = POPTD_PACK;
+	}
+	engine.startGame(start).then(() => {
+		setStatusMode('hidden');
+	}, displayFailureNotice);
+}());
+		</script>
+	</body>
+</html>
+
